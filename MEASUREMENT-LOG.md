@@ -26,3 +26,27 @@ Findings while testing (kept per honesty discipline):
 
 Unit suite: 24 passed, 2 skipped (vllm / arctic-inference not present in this
 lane) — `python -m pytest tests/ -q`.
+
+## 2026-08-24 — serving-lane bring-up (WSL Ubuntu, CPU backend)
+
+Lane re-pin: no CPU wheel exists for `1baf372b` (404 at the per-commit index);
+lane runs the nightly CPU wheel at **f94666b60d4c58ec0807d22c837cfae322a1dde9**
+(vllm 0.26.1rc1.dev1133+gf94666b60.cpu). `assert_seams()` guards the move at
+import; the Windows reference clone stays at the original pin for source reads.
+
+Environment incidents (all one root cause — **host C: drive at 0 bytes free**,
+the WSL VHD and pagefile live there):
+- uv "Bus error", pip "OSError: Errno 5", WSL `E_UNEXPECTED` catastrophic
+  failures and `0x80072746` connection resets were all disk-full symptoms.
+- Writes during the outage silently truncated installed files
+  (`typing_extensions.py` and others at 0 bytes) → venv rebuilt from scratch;
+  never trust a venv that lived through ENOSPC.
+- Recovered ~20 GB: pip/npm caches, >7-day temp, `.holo-ship-tmp`,
+  `_releases` pruned to newest (holo status verified healthy after),
+  8.7 GB pip/uv caches inside the VHD, `fstrim` via `wsl -u root` (874 GiB
+  trimmed; VHD compaction still pending an elevated `diskpart compact vdisk`).
+- `.wslconfig` swap reduced 16 GB → 6 GB (backup at `.wslconfig.bak-kappa`):
+  a 16 GB swap vhdx cannot coexist with <16 GB free on its host drive.
+- arctic-inference 0.2.0 source build initially failed: venv `ninja` shim
+  truncated (ENOSPC casualty), then missing `python3.12-dev` headers —
+  installed via `wsl -u root` (no sudo password needed there).
