@@ -1,28 +1,35 @@
-"""L1 — the κ-witness KV connector.
+"""L1 + L3 — the κ-witness / κ-KV connector.
 
 Scheduler-side: on request_finished (called exactly once per request, before
 its blocks are freed), the full token stream + sampling fingerprint are
 queued off-path; a daemon thread builds the block-witness chain and seal
 (witness.build_chain) and puts them in the κ-store. Serving never waits.
 
-Worker-side (VLLM_KAPPA_WITNESS_KV=1, experimental until the WSL integration
-gate): prefill KV bytes are digested per block — the extraction mirrors
-vLLM's in-tree ExampleConnector — and stored as `kvd` records indexed by
-block key, giving the seal's blocks byte-level KV evidence.
+Worker-side, opt-in by env:
+  VLLM_KAPPA_WITNESS_KV=1 — per-block BLAKE3 digests of prefill KV bytes
+      (`kvd` records) giving the seal byte-level KV evidence.
+  VLLM_KAPPA_KV=1 — L3: full prefill KV payloads stored per BLOCK, keyed by
+      the block-κ through the local KeyedIndex. A later instance (or boot)
+      that sees the same prefix pulls those blocks instead of prefilling:
+      get_num_new_matched_tokens reports the contiguous κ-hit, start_load_kv
+      fetches (verify-on-read — a tampered payload fails its label) and
+      injects into the paged buffer; fetch failures are reported through
+      get_block_ids_with_load_errors so vLLM recomputes those blocks.
+      Implies WITNESS_KV.
 
-Wire-up (no vLLM changes; out-of-tree registration like LMCache's):
+Layout assumption (mirrors the in-tree ExampleConnector, non-MLA):
+paged buffer per layer is [num_pages, 2, page_size, ...]. Anything else
+disables the KV paths with a counter rather than corrupting state.
 
-    from vllm.distributed.kv_transfer.kv_connector.factory import (
-        KVConnectorFactory)
-    KVConnectorFactory.register_connector(
-        "KappaConnector", "vllm_kappa.connector", "KappaConnector")
-
-then --kv-transfer-config '{"kv_connector": "KappaConnector",
-                            "kv_role": "kv_both"}'.
+Wire-up (no vLLM changes):
+    --kv-transfer-config '{"kv_connector": "KappaConnector",
+        "kv_connector_module_path": "vllm_kappa.connector",
+        "kv_role": "kv_both"}'
 """
 
 from __future__ import annotations
 
+import io
 import logging
 import os
 import queue
@@ -32,14 +39,11 @@ from typing import TYPE_CHECKING, Any
 
 from . import PINNED_VLLM_SHA, assert_seams
 from .addressing import chain_block_keys
-from .fabric import KappaStore, store_from_env
+from .fabric import IntegrityError, KappaStore, KeyedIndex, store_from_env
 from .witness import EngineFingerprint, build_chain, request_kappa
 
 if TYPE_CHECKING:
-    import torch
     from vllm.config import VllmConfig
-    from vllm.v1.core.sched.output import SchedulerOutput
-    from vllm.v1.request import Request
 
 logger = logging.getLogger("vllm_kappa.connector")
 
@@ -70,6 +74,24 @@ class _WitnessJob:
     prompt_token_ids: list[int]
     output_token_ids: list[int]
     sampling: dict
+
+
+@dataclass
+class _StoreReq:
+    token_ids: list[int]
+    block_ids: list[int]
+
+
+@dataclass
+class _LoadReq:
+    token_ids: list[int]
+    block_ids: list[int]
+    start_block: int  # first block index to inject (aligned)
+    end_block: int  # one past the last block index to inject
+
+
+def _align_down(n: int, block: int) -> int:
+    return (n // block) * block
 
 
 def _import_base():
@@ -107,7 +129,7 @@ def _engine_fingerprint(vllm_config: "VllmConfig") -> EngineFingerprint:
 
 
 class _WitnessWriter:
-    """Off-path chain builder shared by scheduler- and worker-side roles."""
+    """Off-path chain builder (scheduler side)."""
 
     def __init__(self, engine: EngineFingerprint, store: KappaStore):
         self.engine = engine
@@ -139,14 +161,9 @@ class _WitnessWriter:
                 )
                 for rec in records:
                     self.store.put(rec)
-                label = self.store.put(seal)
+                self.store.put(seal)
                 self.counters["sealed"] += 1
-                logger.debug(
-                    "sealed request %s (%d blocks) -> %s",
-                    request_kappa(seal),
-                    len(records),
-                    label,
-                )
+                logger.debug("sealed %s", request_kappa(seal))
             except Exception:
                 logger.exception("witness build failed (request dropped)")
                 self.counters["dropped"] += 1
@@ -154,22 +171,6 @@ class _WitnessWriter:
     def close(self) -> None:
         self._q.put(None)
         self._t.join(timeout=5)
-
-
-_Base, _Meta, _Role = (None, None, None)
-
-
-def _bases():
-    global _Base, _Meta, _Role
-    if _Base is None:
-        _Base, _Meta, _Role = _import_base()
-    return _Base, _Meta, _Role
-
-
-@dataclass
-class _StoreReq:
-    token_ids: list[int]
-    block_ids: list[int]
 
 
 _lazy: dict[str, type] = {}
@@ -190,16 +191,15 @@ def _build_class():
     if "KappaConnector" in _lazy:
         return _lazy["KappaConnector"]
 
-    import torch  # noqa: F401
+    import torch
 
-    Base, Meta, Role = _bases()
+    Base, Meta, Role = _import_base()
 
     @dataclass
     class KappaConnectorMetadata(Meta):
         stores: list[_StoreReq] = field(default_factory=list)
+        loads: list[_LoadReq] = field(default_factory=list)
 
-    # make the nested classes pickle as module-level names (served by
-    # __getattr__ above) — connector metadata crosses process boundaries
     KappaConnectorMetadata.__module__ = __name__
     KappaConnectorMetadata.__qualname__ = "KappaConnectorMetadata"
 
@@ -218,37 +218,92 @@ def _build_class():
             self._block_size = vllm_config.cache_config.block_size
             self._engine = _engine_fingerprint(vllm_config)
             self._store = store_from_env()
+            self._index = KeyedIndex(self._store.local.root)
             self._writer = _WitnessWriter(self._engine, self._store)
-            self._witness_kv = os.getenv("VLLM_KAPPA_WITNESS_KV", "0") == "1"
-            self._kv_hashers: dict[int, Any] = {}
+            self._kv_payloads = os.getenv("VLLM_KAPPA_KV", "0") == "1"
+            self._witness_kv = (
+                self._kv_payloads
+                or os.getenv("VLLM_KAPPA_WITNESS_KV", "0") == "1"
+            )
+            self._requests_need_load: dict[str, tuple[int, int]] = {}
+            # worker-side scratch: (id(req-meta), block-idx) -> {layer: rows}
+            self._pending: dict[tuple[int, int], dict[str, Any]] = {}
+            self._load_errors: set[int] = set()
+            self.counters = {
+                "kv_blocks_stored": 0,
+                "kv_blocks_injected": 0,
+                "kv_load_errors": 0,
+                "kv_layout_skips": 0,
+                "kappa_hits_reported": 0,
+            }
             logger.info(
-                "kappa-connector up (role=%s, kv-witness=%s, batch_invariant=%s)",
+                "kappa-connector up (role=%s, kv=%s, witness_kv=%s, bi=%s)",
                 role,
+                self._kv_payloads,
                 self._witness_kv,
                 self._engine.batch_invariant,
             )
             if not self._engine.batch_invariant:
                 logger.warning(
-                    "VLLM_BATCH_INVARIANT is off: witnesses record "
-                    "per-deployment bytes, not canonical bytes (PROMPT.md L0)."
+                    "VLLM_BATCH_INVARIANT off: witnesses record per-regime "
+                    "bytes, not canonical bytes (PROMPT.md L0/G0b)."
                 )
 
-        # ---------- scheduler side ----------
+        # ================= scheduler side =================
+        def _prompt_block_keys(self, request) -> list[bytes]:
+            tokens = list(request.prompt_token_ids or [])
+            # the final token must be computed to produce logits, so only
+            # blocks fully inside len-1 are eligible (ExampleConnector rule)
+            usable = _align_down(len(tokens) - 1, self._block_size)
+            return chain_block_keys(
+                tokens[:usable], self._block_size, seed=self._engine.none_hash_seed
+            )
+
         def get_num_new_matched_tokens(self, request, num_computed_tokens):
-            return 0, False  # L3 (κ-KV pull) lands in Phase 3
+            if not self._kv_payloads:
+                return 0, False
+            keys = self._prompt_block_keys(request)
+            start = num_computed_tokens // self._block_size
+            hit = start
+            while hit < len(keys) and self._index.get(keys[hit]) is not None:
+                hit += 1
+            n_new = (hit - start) * self._block_size
+            if n_new > 0:
+                self._requests_need_load[request.request_id] = (start, hit)
+                self.counters["kappa_hits_reported"] += 1
+                logger.info(
+                    "κ-KV hit: request %s blocks [%d,%d) — %d tokens skipped",
+                    request.request_id,
+                    start,
+                    hit,
+                    n_new,
+                )
+            return n_new, False
 
         def update_state_after_alloc(self, request, blocks, num_external_tokens):
-            return
+            if num_external_tokens == 0:
+                self._requests_need_load.pop(request.request_id, None)
 
         def build_connector_meta(self, scheduler_output):
             meta = KappaConnectorMetadata()
-            if self._witness_kv:
-                for new_req in scheduler_output.scheduled_new_reqs:
-                    meta.stores.append(
-                        _StoreReq(
-                            token_ids=list(new_req.prompt_token_ids or []),
-                            block_ids=list(new_req.block_ids[0]),
+            if not self._witness_kv:
+                return meta
+            for new_req in scheduler_output.scheduled_new_reqs:
+                token_ids = list(new_req.prompt_token_ids or [])
+                block_ids = list(new_req.block_ids[0])
+                window = self._requests_need_load.pop(new_req.req_id, None)
+                if window is not None:
+                    meta.loads.append(
+                        _LoadReq(
+                            token_ids=token_ids,
+                            block_ids=block_ids,
+                            start_block=window[0],
+                            end_block=window[1],
                         )
+                    )
+                if self._kv_payloads or self._witness_kv:
+                    meta.stores.append(
+                        _StoreReq(token_ids=token_ids, block_ids=block_ids)
                     )
             return meta
 
@@ -263,12 +318,85 @@ def _build_class():
             )
             return False, None
 
-        # ---------- worker side ----------
+        # ================= worker side =================
         def register_kv_caches(self, kv_caches):
             self._layer_names = list(kv_caches)
 
+        def _layer_rows(self, kv_layer, slot_mapping):
+            """Extract per-token KV rows; None if the layout is foreign."""
+            if kv_layer.dim() < 3 or kv_layer.shape[1] != 2:
+                self.counters["kv_layout_skips"] += 1
+                return None
+            block_idxs = slot_mapping // self._block_size
+            offsets = slot_mapping % self._block_size
+            return kv_layer[block_idxs, :, offsets]
+
         def start_load_kv(self, forward_context, **kwargs):
-            return
+            meta = self._get_connector_metadata()
+            if not isinstance(meta, KappaConnectorMetadata) or not meta.loads:
+                return
+            bs = self._block_size
+            for req in meta.loads:
+                keys = chain_block_keys(
+                    req.token_ids[
+                        : _align_down(len(req.token_ids) - 1, bs)
+                    ],
+                    bs,
+                    seed=self._engine.none_hash_seed,
+                )
+                for j in range(req.start_block, req.end_block):
+                    dest_block = req.block_ids[j]
+                    payload = None
+                    label = self._index.get(keys[j]) if j < len(keys) else None
+                    if label is not None:
+                        try:
+                            raw = self._store.get(label)
+                        except IntegrityError:
+                            raw = None
+                        if raw is not None:
+                            try:
+                                payload = torch.load(
+                                    io.BytesIO(raw), weights_only=True
+                                )
+                            except Exception:
+                                payload = None
+                    if payload is None:
+                        self._load_errors.add(dest_block)
+                        self.counters["kv_load_errors"] += 1
+                        logger.warning(
+                            "κ-KV load refused: prompt block %d (dest block "
+                            "%d) — reporting for recompute",
+                            j,
+                            dest_block,
+                        )
+                        continue
+                    slot = torch.arange(
+                        dest_block * bs, dest_block * bs + bs
+                    )
+                    block_idxs = slot // bs
+                    offsets = slot % bs
+                    ok = True
+                    for name in self._layer_names:
+                        layer = forward_context.no_compile_layers.get(name)
+                        kv = getattr(layer, "kv_cache", None) if layer else None
+                        if isinstance(kv, (list, tuple)):
+                            kv = kv[getattr(forward_context, "virtual_engine", 0)]
+                        rows = payload.get(name)
+                        if kv is None or rows is None or kv.shape[1] != 2:
+                            ok = False
+                            break
+                        kv[block_idxs, :, offsets] = rows.to(kv.device)
+                    if ok:
+                        self.counters["kv_blocks_injected"] += 1
+                    else:
+                        self._load_errors.add(dest_block)
+                        self.counters["kv_load_errors"] += 1
+
+        def get_block_ids_with_load_errors(self):
+            errs, self._load_errors = self._load_errors, set()
+            if errs:
+                logger.warning("κ-KV reporting %d invalid blocks: %s", len(errs), errs)
+            return errs
 
         def wait_for_layer_load(self, layer_name):
             return
@@ -276,53 +404,70 @@ def _build_class():
         def save_kv_layer(self, layer_name, kv_layer, attn_metadata, **kwargs):
             if not self._witness_kv:
                 return
+            meta = self._get_connector_metadata()
+            if not isinstance(meta, KappaConnectorMetadata):
+                return
+            bs = self._block_size
+            for req in meta.stores:
+                n_full = _align_down(len(req.token_ids) - 1, bs)
+                if n_full == 0:
+                    continue
+                slot = torch.tensor(
+                    [
+                        req.block_ids[i // bs] * bs + (i % bs)
+                        for i in range(n_full)
+                    ]
+                )
+                rows = self._layer_rows(kv_layer, slot)
+                if rows is None:
+                    return
+                rows = rows.detach().to("cpu")
+                for j in range(n_full // bs):
+                    self._pending.setdefault((id(req), j), {})[layer_name] = (
+                        rows[j * bs : (j + 1) * bs].clone()
+                    )
+
+        def wait_for_save(self):
+            if not self._witness_kv or not self._pending:
+                return
             import blake3
-            import torch as _torch
+            import cbor2
 
             meta = self._get_connector_metadata()
             if not isinstance(meta, KappaConnectorMetadata):
                 return
             bs = self._block_size
             for req in meta.stores:
-                n_full = (len(req.token_ids) // bs) * bs
-                if n_full == 0:
-                    continue
-                # mirror ExampleConnector's layout assumption:
-                # (num_pages, 2, page_size, ...) non-MLA paged buffer
-                blocks = req.block_ids[: n_full // bs]
-                for j, block_id in enumerate(blocks):
-                    data = (
-                        kv_layer[block_id].detach().to("cpu", non_blocking=False)
-                    )
-                    h = self._kv_hashers.setdefault(
-                        (id(req), j), blake3.blake3()
-                    )
-                    h.update(_torch.flatten(data).contiguous().numpy().tobytes())
-
-        def wait_for_save(self):
-            if not self._witness_kv or not self._kv_hashers:
-                return
-            import cbor2
-
-            meta = self._get_connector_metadata()
-            if not isinstance(meta, KappaConnectorMetadata):
-                return
-            for req in meta.stores:
-                bs = self._block_size
+                n_full = _align_down(len(req.token_ids) - 1, bs)
                 keys = chain_block_keys(
-                    req.token_ids, bs, seed=self._engine.none_hash_seed
+                    req.token_ids[:n_full],
+                    bs,
+                    seed=self._engine.none_hash_seed,
                 )
                 for j, bk in enumerate(keys):
-                    h = self._kv_hashers.pop((id(req), j), None)
-                    if h is None:
+                    layers = self._pending.pop((id(req), j), None)
+                    if layers is None:
                         continue
+                    if self._index.get(bk) is not None:
+                        continue  # compute-once: block already stored
+                    buf = io.BytesIO()
+                    torch.save(layers, buf)
+                    raw = buf.getvalue()
+                    label = self._store.put(raw)
+                    self._index.put(bk, label)
                     self._store.put(
                         cbor2.dumps(
-                            {"v": 1, "t": "kvd", "bk": bk, "kv": h.digest()},
+                            {
+                                "v": 1,
+                                "t": "kvd",
+                                "bk": bk,
+                                "kv": blake3.blake3(raw).digest(),
+                            },
                             canonical=True,
                         )
                     )
-            self._kv_hashers.clear()
+                    self.counters["kv_blocks_stored"] += 1
+            self._pending.clear()
 
         def shutdown(self):
             self._writer.close()

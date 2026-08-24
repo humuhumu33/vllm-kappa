@@ -68,6 +68,32 @@ class LocalStore:
         ]
 
 
+class KeyedIndex:
+    """key-hex → κ-label mapping (files under <root>/index).
+
+    Content addressing has no keyed lookup by design; this is the local
+    naming tier. Its network counterpart is kappa-registry tags (/v2) —
+    never grow a parallel protocol here beyond this file-per-key map.
+    """
+
+    def __init__(self, root: str | Path):
+        self.root = Path(root) / "index"
+        self.root.mkdir(parents=True, exist_ok=True)
+
+    def put(self, key: bytes, label: str) -> None:
+        path = self.root / key.hex()
+        tmp = path.with_suffix(".tmp." + str(os.getpid()))
+        tmp.write_text(label)
+        tmp.replace(path)
+
+    def get(self, key: bytes) -> str | None:
+        path = self.root / key.hex()
+        try:
+            return path.read_text().strip()
+        except OSError:
+            return None
+
+
 class FabricClient:
     """Thin client for hologram-fabric's storage surface. Fail-open everywhere."""
 

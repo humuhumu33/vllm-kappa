@@ -161,6 +161,40 @@ and connector-metadata classes must pickle by module-level name — set
 `__module__`/`__qualname__` on lazily-built classes and serve them from
 `__getattr__`, or the scheduler→worker handoff dies.
 
+## 2026-08-24 — Phase 3 first light (κ-KV pull) — partial, honestly scored
+
+The load path is implemented (block-κ-keyed payloads via KeyedIndex,
+scheduler hit-claiming, worker injection mirroring the in-tree example,
+load-error reporting wired to vLLM's invalid-block recompute machinery,
+which upstream provides end-to-end: worker mixin → `invalid_block_ids` →
+scheduler rewind to longest valid prefix).
+
+Measured on a 1,354-token shared prefix (4 engine boots, one process):
+- **G3c (equality): PASS** — generation from pulled KV byte-identical to
+  cold prefill.
+- TTFT 1.142s → 0.176s with κ-pull — but the harness ran boots in one
+  parent process in order producer→control→pull, so warmth ordering
+  contaminates the comparison; **treat 6.5× as unverified until re-run
+  with per-boot process isolation.**
+- **Defect found (fix known, not yet applied): only the first
+  chunked-prefill chunk is captured** — `build_connector_meta` reads
+  `scheduled_new_reqs` only; resumed chunks never store. 10/84 blocks
+  landed. Fix: accumulate store metadata across steps via the cached-reqs
+  side of SchedulerOutput.
+- **G3b (tamper fallback): FAIL as measured** — corrupted payload was
+  refused at read (verify-on-read worked) but the run produced a different
+  stream, i.e. the invalid-block recompute did not take effect; silent
+  wrong output is the worst failure mode and G3 CANNOT pass until this is
+  fixed and proven. Instrumented rerun attempts were blocked by the host
+  resource wall (below).
+
+**Session stop — host resource wall.** The 31 GB host with C: at ~0 free
+cannot sustain more engine-boot cycles: 12 GB+ WSL destabilizes Windows
+(pagefile growth → WSL service death), 8 GB fails engine boots
+intermittently. Every retry risks another ENOSPC corruption event (one
+already forced a full venv rebuild). Phase 3 verification resumes after
+the host gains headroom (VHD compaction or asset cleanup — user decision).
+
 **Lane summary (all gates runnable on this CPU lane are now complete):**
 G0a PASS (full) · G0b measured (flag GPU-only; native = per-regime canonical)
 · G1a PASS (900/900 unit + disk + production tamper) · G1c PASS (no
