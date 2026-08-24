@@ -299,6 +299,35 @@ UOR content-addressable encoding measurably buy vLLM":
   content plane = plugins + a wrapper; the ontology's Certified|Witness
   semantics throughout.
 
+## 2026-08-24 — U1 hard mode: byte conformance vs the REAL uor-addr
+
+Built `uor-addr-c` from source (Rust 0.2.0), installed the ctypes binding,
+ran `bench/run_u1_conformance.py`: **6/6 identity shapes byte-identical**
+between `sha256(cbor2.dumps(obj, canonical=True))` and the reference
+crate's `kappa.cbor_address` — NONE_HASH seed, both block-key preimage
+shapes (root + chained-with-extras), and the wit/seal/kvd record shapes.
+The RFC 7049 (cbor2) vs RFC 8949 §4.2 (uor-addr) ordering-profile risk is
+now **tested, not argued**, for every shape this program mints (arrays and
+short-text-key maps coincide; a shape that diverges would be a finding).
+
+**Correction to an earlier session answer:** uor-addr already PUBLISHES a
+blake3 identity axis — `AddressModelBlake3` / `address_blake3` /
+`cbor_address_with_hash(HASH_BLAKE3)` — and it byte-verifies against
+`blake3(canonical_cbor)` (checked live). So a blake3-only identity plane
+would be standard-conformant TODAY; per U2b it buys ~20% of a negligible
+cost, so the sha256 σ-default stands, but the option is real, not
+hypothetical.
+
+Fabric-integration status: the addressing layer is now integrated at the
+LIBRARY level — the same `uor_addr` code hologram-fabric's
+`/api/v1/uor/addr` calls is what these labels were verified against. The
+HTTP deployment (fabric console, kappa-registry mount, R4) adds operations,
+not semantics; still open.
+
+Conformance chain as of tonight:
+**torch-free mirror ≡ vLLM `sha256_cbor` ≡ uor-addr Rust reference** —
+one rule, three independent implementations, byte-equal.
+
 **Earlier session-stop note (superseded by the recovery above):** The 31 GB host with C: at ~0 free
 cannot sustain more engine-boot cycles: 12 GB+ WSL destabilizes Windows
 (pagefile growth → WSL service death), 8 GB fails engine boots
