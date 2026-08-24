@@ -32,9 +32,13 @@ from vllm_kappa.witness import (  # noqa: E402
 )
 
 
-def _iter_seals(store: KappaStore):
+def _iter_seals(store: KappaStore, corrupt: list[str]):
     for label in store.local.labels():
-        data = store.get(label)
+        try:
+            data = store.get(label)
+        except IntegrityError:
+            corrupt.append(label)
+            continue
         if data is None:
             continue
         try:
@@ -47,20 +51,24 @@ def _iter_seals(store: KappaStore):
 
 def cmd_verify(args: argparse.Namespace) -> int:
     store = KappaStore(LocalStore(args.store))
-    seals = list(_iter_seals(store))
+    corrupt: list[str] = []
+    seals = list(_iter_seals(store, corrupt))
     if args.seal:
         seals = [(lbl, d) for lbl, d in seals if lbl == args.seal]
-    if not seals:
+    if not seals and not corrupt:
         print("no seals found")
         return 1
+
+    def fetch(label: str):
+        try:
+            return store.get(label)
+        except IntegrityError:
+            corrupt.append(label)
+            return None  # verify_chain reports it as unavailable -> refused
+
     failures = 0
     for label, seal_bytes in seals:
-        try:
-            report = verify_chain(seal_bytes, store.get)
-        except IntegrityError as e:
-            print(f"REFUSED  {label}: {e}")
-            failures += 1
-            continue
+        report = verify_chain(seal_bytes, fetch)
         status = "OK      " if report.ok else "REFUSED "
         print(
             f"{status}{report.request_kappa}  "
@@ -69,8 +77,10 @@ def cmd_verify(args: argparse.Namespace) -> int:
         for p in report.problems:
             print(f"         - {p}")
         failures += 0 if report.ok else 1
+    for label in corrupt:
+        print(f"REFUSED  {label}: bytes do not derive their label")
     print(f"\n{len(seals) - failures}/{len(seals)} seals verified")
-    return 1 if failures else 0
+    return 1 if failures or corrupt else 0
 
 
 def cmd_selftest(_args: argparse.Namespace) -> int:
