@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vllm-kappa"
+version = "0.1.0"
+description = "The κ-connector: zero-fork vLLM plugins for κ-address-verifiable inference"
+requires-python = ">=3.10"
+dependencies = [
+    "cbor2>=5.6",
+    "blake3>=0.4",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+drafter = ["arctic-inference"]
+test = ["pytest>=8"]
+
+[tool.setuptools]
+packages = ["vllm_kappa"]

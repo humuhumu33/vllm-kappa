@@ -1,0 +1,32 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -e .[test]
+      - name: unit tests (vLLM-free lane)
+        run: python -m pytest tests/ -q
+      - name: verifier tamper selftest (G1a unit form)
+        run: python -m verifier.kappa_verify selftest
+
+  zero-diff:
+    # PROMPT.md invariant 1: the vLLM clone is never modified. The clone is
+    # not vendored in git (see .gitignore); this job asserts that stays true
+    # so a vendored-and-patched tree can never sneak in.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          if [ -d third_party/vllm ] && [ ! -f third_party/vllm/.git ] && [ ! -d third_party/vllm/.git ]; then
+            echo "third_party/vllm is vendored without git provenance"; exit 1
+          fi
+          echo "zero-diff invariant holds (clone is external or a proper submodule)"
