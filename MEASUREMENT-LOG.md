@@ -220,9 +220,26 @@ EngineCore); **T14** the poisoning loop above — a κ-store writer colocated
 with a κ-store reader must partition computed-vs-claimed blocks or one
 corruption becomes permanent.
 
-G1b (O(block) challenge harness comparing recomputed KV digests against
-witnessed `kvd` records) is now mechanically unlocked by this load path;
-formal harness still to build.
+## 2026-08-24 — G1b: the challenge asymmetry, measured on real KV bytes
+
+`bench/run_g1b.py`: producer stores all blocks; drop block J's index entry;
+the challenge boot pulls [0,J) and recomputes J..end; compare recomputed
+payload against the witnessed one.
+
+- **Block 9 (last-block challenge): bit-perfect** — the recomputed payload
+  re-derives the *identical κ-label* (content addressing certified the
+  equality; torch.save serialization proved deterministic). Challenge cost
+  **0.314 s vs 1.117 s full prefill**; output stream identical.
+- **Block 5 (interior split): low-bit KV drift** — recomputed bytes differ
+  (different prefill GEMM shape; the G0b m-variance at byte level) while the
+  output stream is STILL identical (drift below argmax sensitivity here).
+- Asymmetry curve is linear in the remaining suffix: 0.31 / 0.78 / 1.12 s
+  at J = 9 / 5 / cold.
+
+Verdict: on the CPU lane, byte-level KV challenges are exact for same-split
+replay (and the token-chain seal verification of G1c is split-independent);
+interior-split byte equality requires the batch-invariant GPU lane. The
+O(block)-at-the-margin claim is now a measurement, not an argument.
 
 **Earlier session-stop note (superseded by the recovery above):** The 31 GB host with C: at ~0 free
 cannot sustain more engine-boot cycles: 12 GB+ WSL destabilizes Windows
