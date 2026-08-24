@@ -241,6 +241,64 @@ replay (and the token-chain seal verification of G1c is split-independent);
 interior-split byte equality requires the batch-invariant GPU lane. The
 O(block)-at-the-margin claim is now a measurement, not an argument.
 
+## 2026-08-24 — PROMPT-UOR executed: U1–U4 + THE CLOSING VERDICT
+
+**U1 (identity totality)** — IDENTITY-LEDGER.md: 11 identity surfaces
+audited. 6 canonical (block keys become UOR with one config flip — G0a's
+byte-equality carries the proof), 1 plane-mix cosmetic, 2 real findings:
+**F1** LoRA cache identity is a mutable *name* (collision/miss by rename —
+proposed schema: adapter weight-manifest identity) and **F4** the model's own
+identity is a trust-by-path string — closed the same day by `weights.py`.
+Bonus discovery: vLLM's multimodal hasher already defaults to **blake3 for
+content bytes** — the two-plane split (bytes→blake3, meanings→sha256-CBOR)
+is independently vLLM's own choice, not an imposition.
+
+**U2/U2b (identity overhead)** — real block-key preimages, 5-rep medians:
+at block 128, sha256-pickle 3.3µs · sha256_cbor 20.1µs · blake3_cbor 16.1µs
+· xxhash_cbor 15.7µs. Three honest readings: (1) the UOR mode is ~6× the
+default **per hash** but **≈322µs per 2k-token prompt = 0.03% of this
+lane's prefill** — an arithmetic bound, not an A/B boot, and far under the
+1% gate; (2) the cost lives in Python canonical-CBOR (~15µs), NOT the hash
+(~5µs) — the optimization path is a native CBOR encoder, never a weaker
+hash; (3) **U2b: replacing sha256 with blake3 buys ~20% of a negligible
+number** — hash choice on the identity plane is a conformance lever, not a
+performance lever, now with data.
+
+**U3 (verified weights)** — 988 MB Qwen2.5-0.5B-Instruct: manifest build
+0.91s, **verify 0.22s = 4.5 GB/s ≈ 1% of engine boot** (gate ≤15%).
+Tamper: ONE BIT flipped mid-file → proven-boot gate refuses **naming the
+exact tensor** (`model.layers.15.mlp.gate_proj.weight`). Certified|Witness,
+no third state.
+
+**U4 (content dedup)** — publishable negative, per the kill criteria:
+base vs Instruct share **0/290 tensors and 0/943 1-MiB chunks**. A full
+finetune rewrites everything; κ buys *integrity*, not storage, across
+full-finetune families. (LoRA families dedup ~100% by construction — the
+base is shared verbatim; not a κ result, noted for fairness.)
+
+### VERDICT (PROMPT-UOR deliverable 5)
+
+With U5–U7 inherited from G2/G3/G1 measurements, the answer to "what does
+UOR content-addressable encoding measurably buy vLLM":
+
+- **Verification: the headline win.** Boot-time weight proof at 4.5 GB/s
+  (~1% of boot); per-request seals at no measurable serving cost (≤1.46%,
+  within noise); offline audit of real traffic (16/16); challenge asymmetry
+  0.31s vs 1.12s; 100% refusal under every tamper tried (weights, KV,
+  seals, drafts — always naming the refusing object). Cost ≈ 0.03% identity
+  overhead. **Verification is essentially free and total.**
+- **Latency: real, regime-bound.** 5.1× TTFT from cross-boot κ-KV prefix
+  pull; 4.4× decode-bound warm-start drafting (4.3× over vLLM's own
+  suffix decoding — the persistent store IS the differentiator).
+- **Throughput: no free win.** Saturated-batch speculation is a measured
+  negative (all arms); publishable throughput numbers belong to the
+  batch-invariant GPU lane.
+- **Storage: negative for full finetunes** (0% dedup), positive trivially
+  for LoRA families.
+- **Diff cost: zero forked files.** Identity plane = one config value;
+  content plane = plugins + a wrapper; the ontology's Certified|Witness
+  semantics throughout.
+
 **Earlier session-stop note (superseded by the recovery above):** The 31 GB host with C: at ~0 free
 cannot sustain more engine-boot cycles: 12 GB+ WSL destabilizes Windows
 (pagefile growth → WSL service death), 8 GB fails engine boots
