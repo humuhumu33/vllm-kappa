@@ -166,32 +166,42 @@ def _bases():
     return _Base, _Meta, _Role
 
 
-def KappaConnector(*args, **kwargs):  # noqa: N802 - class path used by vLLM
-    """Factory: builds the real class on first use (keeps module importable
-    without torch/vLLM for the verifier and unit tests)."""
-    return _build_class()(*args, **kwargs)
+@dataclass
+class _StoreReq:
+    token_ids: list[int]
+    block_ids: list[int]
 
 
-_cls_cache = None
+_lazy: dict[str, type] = {}
+
+
+def __getattr__(name):  # PEP 562: vLLM resolves these CLASSES by name — for
+    # classmethod calls on the connector and for pickling the metadata
+    # between the scheduler and worker processes — so the lazy build must
+    # yield real module-addressable classes. The module itself stays
+    # importable without torch for the verifier and unit tests.
+    if name in ("KappaConnector", "KappaConnectorMetadata"):
+        _build_class()
+        return _lazy[name]
+    raise AttributeError(name)
 
 
 def _build_class():
-    global _cls_cache
-    if _cls_cache is not None:
-        return _cls_cache
+    if "KappaConnector" in _lazy:
+        return _lazy["KappaConnector"]
 
     import torch  # noqa: F401
 
     Base, Meta, Role = _bases()
 
     @dataclass
-    class _StoreReq:
-        token_ids: list[int]
-        block_ids: list[int]
-
-    @dataclass
     class KappaConnectorMetadata(Meta):
         stores: list[_StoreReq] = field(default_factory=list)
+
+    # make the nested classes pickle as module-level names (served by
+    # __getattr__ above) — connector metadata crosses process boundaries
+    KappaConnectorMetadata.__module__ = __name__
+    KappaConnectorMetadata.__qualname__ = "KappaConnectorMetadata"
 
     class _KappaConnector(Base):
         def __init__(self, vllm_config, role, kv_cache_config=None, **kw):
@@ -318,5 +328,8 @@ def _build_class():
             self._writer.close()
             self._store.close()
 
-    _cls_cache = _KappaConnector
-    return _cls_cache
+    _KappaConnector.__module__ = __name__
+    _KappaConnector.__qualname__ = "KappaConnector"
+    _lazy["KappaConnector"] = _KappaConnector
+    _lazy["KappaConnectorMetadata"] = KappaConnectorMetadata
+    return _KappaConnector

@@ -139,3 +139,32 @@ regime** (agentic replay, restarts, shared stores, small batches) where it is
 the only arm that improves at all — and the saturated-batch regime is a
 measured negative for speculation generally. The publishable G2c number is
 the GPU lane's to produce.
+
+## 2026-08-24 — G1c: the L1 witness pipeline on real inference — PASS
+
+KappaConnector live via `kv_connector_module_path` (zero vLLM diff), 16
+requests × 48 tokens × 2 reps per arm, Qwen2.5-0.5B CPU.
+
+- **16/16 real request seals verified** by `verifier/kappa_verify.py` — the
+  full chain (request → connector `request_finished` → off-path witness
+  build → κ-store → offline audit) closed on real inference bytes for the
+  first time.
+- **On-disk tamper refused**: 1 byte flipped in a stored record → audit rc 1.
+- **Overhead 1.46% by median — within noise** (plain arm spread 285–340
+  tok/s); honest claim: no measurable overhead at this precision (gate ≤2%).
+
+Two more seam lessons (T11, T12), both from vLLM resolving the connector at
+CLASS level and shipping its metadata across processes: a factory function
+cannot stand in for the connector class (`get_required_kvcache_layout` is a
+classmethod call) — serve the real class via module `__getattr__` (PEP 562);
+and connector-metadata classes must pickle by module-level name — set
+`__module__`/`__qualname__` on lazily-built classes and serve them from
+`__getattr__`, or the scheduler→worker handoff dies.
+
+**Lane summary (all gates runnable on this CPU lane are now complete):**
+G0a PASS (full) · G0b measured (flag GPU-only; native = per-regime canonical)
+· G1a PASS (900/900 unit + disk + production tamper) · G1c PASS (no
+measurable overhead, real seals verify) · G2a PASS (192/192 at 48 tok) ·
+G2b PASS (poison harmless) · G2c: saturated-batch negative (all arms),
+decode-bound warm-start 4.4×/4.3× — GPU lane owns the publishable number ·
+G1b + Phase 3 (κ-KV load) + G2d: pending, need the load path and a GPU.
