@@ -92,7 +92,7 @@ def main() -> int:
 
     base, t_base, n_base = run_generate(args.model, prompts, args.max_tokens, None)
     spec_cfg = {
-        "method": "custom",
+        "method": "custom_class",
         "model": "vllm_kappa.drafter.KappaProposer",
         "num_speculative_tokens": args.num_spec,
     }

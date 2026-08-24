@@ -80,6 +80,19 @@ def _build_class():
             )
             self._sealer.start()
             self._warm(int(os.getenv("VLLM_KAPPA_WARM_MAX", "5000")))
+            # continuous batching never calls propose again after the last
+            # step, so requests that finish together would otherwise never
+            # seal; flush synchronously at interpreter exit.
+            import atexit
+
+            atexit.register(self._seal_all)
+
+        def _seal_all(self) -> None:
+            for rid in list(self._tracked):
+                pattern, response = self._tracked.pop(rid, (None, None))
+                if pattern and response and len(response) >= MIN_SEAL_TOKENS:
+                    self.store.put(encode_draft(pattern, response))
+                    self.counters["sealed_records"] += 1
 
         # -- persistence (off-path) ---------------------------------------
         def _drain_seals(self):
@@ -124,32 +137,78 @@ def _build_class():
             if n:
                 logger.info("kappa-drafter: warmed suffix tree with %d records", n)
 
-        # -- the hot path: delegate, then bookkeep -------------------------
-        def propose(self, num_speculative_tokens, input_batch, sampled_token_ids, slot_mappings=None):
-            for i, sampled_ids in enumerate(sampled_token_ids):
-                if not sampled_ids:
+        # -- the hot path ---------------------------------------------------
+        # Two propose contracts exist (T4):
+        #   pinned era:  propose(num_spec, input_batch, sampled_token_ids, ...)
+        #   nightly:     propose(sampled_token_ids, num_tokens_no_spec,
+        #                        token_ids_cpu, slot_mappings=...)
+        # The nightly contract carries no req_ids, so rows are identified by
+        # a stable content key (blake3 of the first tokens of the context).
+        # Two requests with an identical 32-token prefix share an identity;
+        # that only merges their draft bookkeeping, never their outputs.
+        def propose(self, *args, slot_mappings=None, **_kw):
+            if args and isinstance(args[0], int):
+                num_spec, input_batch, sampled = args[0], args[1], args[2]
+                num_tokens = input_batch.num_tokens_no_spec
+                token_mat = input_batch.token_ids_cpu
+                req_ids = list(input_batch.req_ids)
+            else:
+                sampled, num_tokens, token_mat = args[0], args[1], args[2]
+                req_ids = None
+                num_spec = self.num_speculative_tokens
+            return self._propose_rows(sampled, num_tokens, token_mat, req_ids, num_spec)
+
+        def _row_key(self, ctx):
+            import blake3 as _b3
+
+            head = bytes(str(ctx[: min(len(ctx), 32)]), "utf-8")
+            return "k" + _b3.blake3(head).hexdigest()[:16]
+
+        def _propose_rows(self, sampled, num_tokens, token_mat, req_ids, num_spec):
+            drafts: list[list[int]] = []
+            seen: set[str] = set()
+            for i, sampled_ids in enumerate(sampled):
+                if sampled_ids is None or len(sampled_ids) == 0:
+                    drafts.append([])
                     continue
-                req_id = input_batch.req_ids[i]
-                entry = self._tracked.get(req_id)
-                if entry is None:
-                    index = input_batch.req_id_to_index[req_id]
-                    num_prompt = input_batch.num_prompt_tokens[index]
-                    start = max(0, num_prompt - self.max_tree_depth)
-                    pattern = [
-                        int(t)
-                        for t in input_batch.token_ids_cpu[index, start:num_prompt]
-                    ]
-                    entry = (pattern, [])
-                    self._tracked[req_id] = entry
+                n = int(num_tokens[i])
+                if n >= self.max_model_len - 1:
+                    drafts.append([])
+                    continue
+                ctx = [int(t) for t in token_mat[i, :n]]
+                rid = req_ids[i] if req_ids is not None else self._row_key(ctx)
+                seen.add(rid)
+
+                if rid not in self.suffix_cache.active_requests:
+                    if rid in self.suffix_cache.cached_requests:
+                        self.suffix_cache.evict_cached_response(rid)
+                    self.suffix_cache.start_request(rid, ctx)
+                    start = max(0, n - len(sampled_ids) - self.max_tree_depth)
+                    self._tracked[rid] = (
+                        ctx[start : n - len(sampled_ids)],
+                        [int(t) for t in sampled_ids],
+                    )
                     self.counters["tracked_requests"] += 1
-                entry[1].extend(int(t) for t in sampled_ids)
+                else:
+                    self.suffix_cache.add_active_response(
+                        rid, [int(t) for t in sampled_ids]
+                    )
+                    if rid in self._tracked:
+                        self._tracked[rid][1].extend(int(t) for t in sampled_ids)
 
-            drafts = super().propose(
-                num_speculative_tokens, input_batch, sampled_token_ids, slot_mappings
-            )
+                pattern = ctx[max(0, n - self.max_tree_depth) :]
+                draft = self.suffix_cache.speculate(
+                    rid,
+                    pattern,
+                    max_spec_tokens=min(num_spec, self.max_model_len - n - 1),
+                    max_spec_factor=self.max_spec_factor,
+                    min_token_prob=self.min_token_prob,
+                )
+                drafts.append(list(draft.token_ids))
 
-            for req_id in list(self._tracked.keys() - set(input_batch.req_ids)):
-                self._seal(req_id)
+            for rid in list(self.suffix_cache.active_requests - seen):
+                self._seal(rid)
+                self.suffix_cache.stop_request(rid)
             return drafts
 
     return _KappaProposer

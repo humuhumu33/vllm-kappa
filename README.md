@@ -41,7 +41,7 @@ Serve with both plugins enabled (Linux, vLLM at the pinned SHA):
 ```bash
 VLLM_BATCH_INVARIANT=1 VLLM_KAPPA_STORE_DIR=/var/kappa \
 vllm serve Qwen/Qwen2.5-1.5B-Instruct \
-  --speculative-config '{"method":"custom","model":"vllm_kappa.drafter.KappaProposer","num_speculative_tokens":8}' \
+  --speculative-config '{"method":"custom_class","model":"vllm_kappa.drafter.KappaProposer","num_speculative_tokens":8}' \
   --kv-transfer-config '{"kv_connector":"KappaConnector","kv_role":"kv_both","kv_connector_module_path":"vllm_kappa.connector"}'
 ```
 
