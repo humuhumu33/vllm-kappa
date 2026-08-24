@@ -54,7 +54,7 @@ def main() -> int:
     ]
     sp = SamplingParams(temperature=0.0, max_tokens=args.max_tokens, logprobs=1)
 
-    llm = LLM(model=args.model, dtype="bfloat16", enforce_eager=True)
+    llm = LLM(model=args.model, dtype="bfloat16", enforce_eager=True, gpu_memory_utilization=0.5)
 
     def run(batch: list[str]) -> dict[str, bytes]:
         outs = llm.generate(batch, sp)

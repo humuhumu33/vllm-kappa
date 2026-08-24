@@ -33,6 +33,7 @@ def run_generate(model: str, prompts: list[str], max_tokens: int, spec: dict | N
         model=model,
         dtype="bfloat16",
         enforce_eager=True,
+        gpu_memory_utilization=0.5,  # CPU backend: fraction of RAM reserved
         disable_log_stats=False,
         **kwargs,
     )

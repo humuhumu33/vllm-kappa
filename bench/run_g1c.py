@@ -30,7 +30,8 @@ def run_arm(model, prompts, max_tokens, connector_store: str | None):
             "kv_connector_module_path": "vllm_kappa.connector",
             "kv_role": "kv_both",
         }
-    llm = LLM(model=model, dtype="bfloat16", enforce_eager=True, **kwargs)
+    llm = LLM(model=model, dtype="bfloat16", enforce_eager=True,
+              gpu_memory_utilization=0.5, **kwargs)
     sp = SamplingParams(temperature=0.0, max_tokens=max_tokens)
     t0 = time.perf_counter()
     outs = llm.generate(prompts, sp)

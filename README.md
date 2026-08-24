@@ -26,9 +26,14 @@ PASS against real vLLM; G0b measured (batch-invariant mode is GPU-only; native
 CPU invariance characterized precisely — order/size-invariant for m≥2, restart
 bit-stable); **G2a/G2b PASS live: 32/32 token streams byte-identical with the
 κ-drafter on, including against a poisoned store, with cross-process draft
-persistence proven** and 4.4–4.9× first-light throughput (uncontrolled — see
-MEASUREMENT-LOG). Remaining: controlled G2c, G1c overhead, Phase 3 κ-KV pull,
-live fabric integration, GPU lane. [PROMPT.md](PROMPT.md) is the complete
+persistence proven**. Controlled G2c: on a compute-saturated CPU batch,
+speculation (in-tree suffix included) is a measured negative; in the
+decode-bound regime the κ-drafter's **warm start from the persistent store is
+4.4× baseline and 4.3× over in-tree suffix** (control-gated) — the cross-boot
+store is the entire delta. An earlier uncontrolled 4.4× claim was retracted
+when its baseline turned out to be memory-starved; see MEASUREMENT-LOG.
+Remaining: G1c overhead, Phase 3 κ-KV pull, live fabric integration, GPU lane
+(regime-free canonical bytes + the publishable G2c). [PROMPT.md](PROMPT.md) is the complete
 implementation prompt (pinned SHAs, seams, gates, kill criteria, traps);
 [MEASUREMENT-LOG.md](MEASUREMENT-LOG.md) records gate results. Implemented so far:
 `vllm_kappa/` (addressing mirror, two-tier κ-store with fail-open fabric client,

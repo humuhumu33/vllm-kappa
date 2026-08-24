@@ -96,3 +96,46 @@ silently restarts and tmpfs evidence vanishes (one persistence run had to be
 redone on a home-dir store); the nightly `custom_class` propose contract
 passes numpy arrays — `if not sampled_ids:` is an ambiguity crash, guard with
 `len()`.
+
+## 2026-08-24 — G2c controlled (CPU lane) — retraction + the real result
+
+Environment first: the box's WSL was memory-starved all morning (24 GB VM on a
+31 GB host at 0 bytes disk free). Re-run under a right-sized VM (8 GB,
+`VLLM_KAPPA_MEMUTIL=0.35`), 3 arms (none / in-tree suffix / κ) × 2 boots,
+numpy-GEMM control gate on every rep.
+
+**RETRACTION.** The morning's "4.4× first light" was measured against a
+baseline thrashing in the starved VM (12–19 tok/s). A healthy baseline runs
+~300 tok/s at batch 16. Honesty discipline: the earlier number is void.
+
+**Batch-16 (compute-saturated CPU): speculation loses, ~10–35% below
+baseline — for BOTH suffix and κ equally.** This is the regime, not the
+κ-store: on a saturated CPU, the k extra verify tokens cost what they save.
+7/12 reps control-flagged (busy machine); magnitudes indicative only.
+Identity: **192/192 streams byte-identical across all arms** at 48 tokens.
+
+**Batch-2 × 128 tokens (decode-bound regime): the κ thesis lands.**
+- baseline ~51–55 tok/s · suffix ~58 (both boots — no cross-boot memory)
+- **κ boot 2 (warm from store): 245.5 tok/s — 4.4× baseline, 4.3× over
+  in-tree suffix, control unflagged.** The persistent store is exactly the
+  measured delta over Arctic suffix decoding.
+- Same-boot κ (cold store): 58.4 — parity with suffix, as expected.
+- Corroborated on different prompts in a separate session: 11.5→30.1 tok/s
+  (2.6×, busy machine, cold store, within-generation matches only).
+
+**Long-generation identity on CPU is text-dependent.** At 128 tokens some
+prompts diverge from the batch-reference for suffix AND κ alike (κ warm boot
+most, since accepted runs enlarge verify-batch m); a different prompt set at
+the same shape held 2/2 with zero tie-flips. Mechanism = the G0b m-boundary
+bit-divergence surfacing as greedy tie-flips. Not a drafter defect (in-tree
+suffix diverges identically); distribution-level correctness is untouched;
+bit-level identity for long generations needs the batch-invariant GPU lane.
+
+**G2d (novel ≤3%)**: unresolvable on this lane — the whole spec-decode
+mechanism is regime-negative at batch 16 here, suffix included. Defer to GPU.
+
+Verdict per PROMPT.md §7: on CPU the drafter's value is the **warm-start
+regime** (agentic replay, restarts, shared stores, small batches) where it is
+the only arm that improves at all — and the saturated-batch regime is a
+measured negative for speculation generally. The publishable G2c number is
+the GPU lane's to produce.

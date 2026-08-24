@@ -75,7 +75,9 @@ def run_boot(model, prompts, max_tokens, arm, num_spec):
             "num_speculative_tokens": num_spec,
         }
     kwargs = {"speculative_config": spec} if spec else {}
-    llm = LLM(model=model, dtype="bfloat16", enforce_eager=True, **kwargs)
+    memutil = float(os.environ.get("VLLM_KAPPA_MEMUTIL", "0.5"))
+    llm = LLM(model=model, dtype="bfloat16", enforce_eager=True,
+              gpu_memory_utilization=memutil, **kwargs)
     sp = SamplingParams(temperature=0.0, max_tokens=max_tokens)
     t0 = time.perf_counter()
     outs = llm.generate(prompts, sp)
