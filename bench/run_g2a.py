@@ -118,8 +118,19 @@ def main() -> int:
             real_divergences += 1
             print(f"REAL DIVERGENCE at token {i} (logprob gap {gap:.5f}): {p[:40]}")
 
+    from vllm_kappa.drafter import decode_draft
+    from vllm_kappa.fabric import KappaStore, LocalStore
+
+    check = KappaStore(LocalStore(store_dir))
+    n_records = sum(
+        1
+        for lbl in check.local.labels()
+        if (d := check.get(lbl)) and decode_draft(d)
+    )
+
     result = {
         "gate": "G2a",
+        "draft_records_in_store": n_records,
         "identical": identical,
         "tie_flips": tie_flips,
         "real_divergences": real_divergences,

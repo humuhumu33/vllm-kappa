@@ -21,7 +21,14 @@ The core inversion: speculative decoding is the one protocol where verifying
 untrusted compute makes you *faster* — so the compute-once κ network plugs into a
 verifier vLLM already runs profitably.
 
-**Status: Phase 0/1 unit lane green.** [PROMPT.md](PROMPT.md) is the complete
+**Status: Phases 0–2 first light green on the CPU serving lane** — G0a identity
+PASS against real vLLM; G0b measured (batch-invariant mode is GPU-only; native
+CPU invariance characterized precisely — order/size-invariant for m≥2, restart
+bit-stable); **G2a/G2b PASS live: 32/32 token streams byte-identical with the
+κ-drafter on, including against a poisoned store, with cross-process draft
+persistence proven** and 4.4–4.9× first-light throughput (uncontrolled — see
+MEASUREMENT-LOG). Remaining: controlled G2c, G1c overhead, Phase 3 κ-KV pull,
+live fabric integration, GPU lane. [PROMPT.md](PROMPT.md) is the complete
 implementation prompt (pinned SHAs, seams, gates, kill criteria, traps);
 [MEASUREMENT-LOG.md](MEASUREMENT-LOG.md) records gate results. Implemented so far:
 `vllm_kappa/` (addressing mirror, two-tier κ-store with fail-open fabric client,

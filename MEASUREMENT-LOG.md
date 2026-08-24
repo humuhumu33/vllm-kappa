@@ -75,3 +75,24 @@ re-derivable **per batching regime** — witness verification must replay
 solo-as-solo / batched-as-batched. Order and moderate batch-size changes do
 not move a bit; only the m=1 kernel boundary does. Regime-free canonical
 bytes await a GPU lane with `VLLM_BATCH_INVARIANT`.
+
+## 2026-08-24 — G2a / G2b / persistence, first light (CPU lane)
+
+KappaProposer live inside a real engine via `method:"custom_class"` (nightly
+contract: positional `(sampled_token_ids, num_tokens_no_spec, token_ids_cpu)`,
+**no req_ids** — rows identified by a 32-token content key; the pinned-era
+`(num_spec, input_batch, …)` contract is auto-detected). 8 prompts × 48
+tokens, greedy, Qwen2.5-0.5B bf16 eager.
+
+| Gate | Status | Evidence |
+|---|---|---|
+| G2a (verified-by-construction) | **PASS** | 8/8 token streams byte-identical drafter-on vs drafter-off; 0 tie-flips, 0 divergences. Across all four engine boots of the day: **32/32 prompt-runs identical**, including poisoned and warm-started stores. |
+| G2b (adversarial store) | **PASS** | store pre-poisoned with 200 garbage draft records → still 8/8 identical; only throughput noise. The Byzantine-tolerance claim is now measured, not argued. |
+| G2c (persistence half) | **PASS** | after run 1 the store held 200 poison + **8 real sealed drafts** (atexit flush); a fresh engine process warm-started from them, stayed 8/8 identical, sealed 8 more (216 total). Cross-process draft persistence works end-to-end. |
+| G2c (throughput) | first light only | drafter multiplier 4.4×–4.9× in cold-boot runs (15.6→68.5, 11.8→58.3 tok/s) but base itself swung 11.8→67.7 across boots (busy machine, no control gate). Magnitude awaits the Hoefler harness on an idle box; the workload is also favorably self-similar. |
+
+New traps (T9, T10): **never place the κ-store under /tmp on WSL** — the VM
+silently restarts and tmpfs evidence vanishes (one persistence run had to be
+redone on a home-dir store); the nightly `custom_class` propose contract
+passes numpy arrays — `if not sampled_ids:` is an ambiguity crash, guard with
+`len()`.
