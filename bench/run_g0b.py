@@ -30,10 +30,20 @@ def main() -> int:
     ap.add_argument("--n-prompts", type=int, default=24)
     ap.add_argument("--max-tokens", type=int, default=48)
     ap.add_argument("--expect", help="digest from a previous run (restart check)")
+    ap.add_argument(
+        "--native",
+        action="store_true",
+        help="measure the backend's NATIVE batch-invariance without "
+        "VLLM_BATCH_INVARIANT (which is Triton/GPU-only — measured "
+        "2026-08-24: its mean/matmul kernels are Triton, so the CPU "
+        "backend cannot run it). A native pass still yields canonical "
+        "bytes per engine build; a native fail re-scopes L1/L3 to "
+        "per-deployment reproducibility (PROMPT.md §7).",
+    )
     args = ap.parse_args()
 
-    if os.getenv("VLLM_BATCH_INVARIANT") != "1":
-        print("refusing: VLLM_BATCH_INVARIANT must be 1 for G0b")
+    if os.getenv("VLLM_BATCH_INVARIANT") != "1" and not args.native:
+        print("refusing: VLLM_BATCH_INVARIANT must be 1 for G0b (or pass --native)")
         return 2
 
     from vllm import LLM, SamplingParams
