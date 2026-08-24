@@ -188,7 +188,43 @@ Measured on a 1,354-token shared prefix (4 engine boots, one process):
   fixed and proven. Instrumented rerun attempts were blocked by the host
   resource wall (below).
 
-**Session stop — host resource wall.** The 31 GB host with C: at ~0 free
+## 2026-08-24 — Phase 3 COMPLETE on the CPU lane (post-recovery)
+
+Host recovered without elevation: deleted rebuildable tool artifacts inside
+WSL (whisper_env, emsdk, depot_tools, ollama tarball ≈ 9 GB), fstrim'd
+878 GiB, VM right-sized to 10 GB. (VHD compaction still pending the user's
+elevated `diskpart /s compact-vhd.txt` — prepared in the session scratchpad.)
+
+**Retraction of a retraction:** the "chunked-save gap (10/84 blocks)" was
+wrong — the CPU backend's `block_size` is **128**, not 16; 10 × 128 = full
+coverage of the 1,354-token prompt. Witness block keys use the same
+`cache_config.block_size`, so identity is consistent throughout.
+
+**G3b root cause and fix (the important one):** after refusing a corrupt
+block, the same step's save pass re-stored the never-computed garbage from
+the paged buffer under the block's κ — replacing detectable corruption with
+validly-hashed poison. Two rules now enforced: (1) **drop the index entry on
+refusal** (negative cache) so rescheduled requests miss and prefill; (2)
+**never store blocks you did not compute** (store requests carry the
+externally-claimed window and skip it). With both:
+
+| Gate | Result (isolated processes, 1,354-token shared prefix) |
+|---|---|
+| G3a TTFT | cold 1.264/1.224 s → κ-pull **0.269/0.239 s = 5.1×**; producer (cold+storing) 1.413 s (~12% store overhead, on-path writes — future async) |
+| G3b tamper | corrupt payload → refused at read → index dropped → invalid-block report → scheduler recompute → **stream byte-identical to producer**; index self-heals with recomputed bytes |
+| G3c equality | **7/7 streams byte-identical** across cold/producer/pull/tampered arms |
+
+New traps: **T13** engine boots must run from real script files
+(multiprocessing spawn re-imports `__main__`; heredoc/stdin scripts kill
+EngineCore); **T14** the poisoning loop above — a κ-store writer colocated
+with a κ-store reader must partition computed-vs-claimed blocks or one
+corruption becomes permanent.
+
+G1b (O(block) challenge harness comparing recomputed KV digests against
+witnessed `kvd` records) is now mechanically unlocked by this load path;
+formal harness still to build.
+
+**Earlier session-stop note (superseded by the recovery above):** The 31 GB host with C: at ~0 free
 cannot sustain more engine-boot cycles: 12 GB+ WSL destabilizes Windows
 (pagefile growth → WSL service death), 8 GB fails engine boots
 intermittently. Every retry risks another ENOSPC corruption event (one

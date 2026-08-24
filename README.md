@@ -32,8 +32,12 @@ decode-bound regime the κ-drafter's **warm start from the persistent store is
 4.4× baseline and 4.3× over in-tree suffix** (control-gated) — the cross-boot
 store is the entire delta. An earlier uncontrolled 4.4× claim was retracted
 when its baseline turned out to be memory-starved; see MEASUREMENT-LOG.
-Remaining: G1c overhead, Phase 3 κ-KV pull, live fabric integration, GPU lane
-(regime-free canonical bytes + the publishable G2c). [PROMPT.md](PROMPT.md) is the complete
+G1c PASS (16/16 real seals verify offline, tamper refused, overhead within
+noise). **Phase 3 (κ-KV) COMPLETE on the CPU lane: shared-prefix TTFT 5.1×
+(1.24 s → 0.25 s over a 1,354-token prefix, isolated boots), tampered blocks
+refused → recomputed → byte-identical output with a self-healing index, and
+7/7 equality across all arms.** Remaining: G1b challenge harness, live fabric
+integration, GPU lane (regime-free canonical bytes + the publishable G2c). [PROMPT.md](PROMPT.md) is the complete
 implementation prompt (pinned SHAs, seams, gates, kill criteria, traps);
 [MEASUREMENT-LOG.md](MEASUREMENT-LOG.md) records gate results. Implemented so far:
 `vllm_kappa/` (addressing mirror, two-tier κ-store with fail-open fabric client,

@@ -93,6 +93,13 @@ class KeyedIndex:
         except OSError:
             return None
 
+    def drop(self, key: bytes) -> None:
+        """Negative-cache a refused mapping so it is never claimed again."""
+        try:
+            (self.root / key.hex()).unlink()
+        except OSError:
+            pass
+
 
 class FabricClient:
     """Thin client for hologram-fabric's storage surface. Fail-open everywhere."""

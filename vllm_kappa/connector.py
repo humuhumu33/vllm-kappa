@@ -80,6 +80,13 @@ class _WitnessJob:
 class _StoreReq:
     token_ids: list[int]
     block_ids: list[int]
+    # blocks in [skip_start, skip_end) were externally claimed (loaded or
+    # refused), NOT computed here — storing them would snapshot whatever the
+    # paged buffer holds (garbage before recompute) under a valid κ,
+    # replacing detectable corruption with undetectable poison. Never store
+    # what you did not compute.
+    skip_start: int = 0
+    skip_end: int = 0
 
 
 @dataclass
@@ -303,7 +310,12 @@ def _build_class():
                     )
                 if self._kv_payloads or self._witness_kv:
                     meta.stores.append(
-                        _StoreReq(token_ids=token_ids, block_ids=block_ids)
+                        _StoreReq(
+                            token_ids=token_ids,
+                            block_ids=block_ids,
+                            skip_start=window[0] if window else 0,
+                            skip_end=window[1] if window else 0,
+                        )
                     )
             return meta
 
@@ -363,9 +375,14 @@ def _build_class():
                     if payload is None:
                         self._load_errors.add(dest_block)
                         self.counters["kv_load_errors"] += 1
+                        if j < len(keys):
+                            # drop the mapping so the rescheduled request
+                            # misses and prefills instead of re-claiming the
+                            # same refused payload forever
+                            self._index.drop(keys[j])
                         logger.warning(
                             "κ-KV load refused: prompt block %d (dest block "
-                            "%d) — reporting for recompute",
+                            "%d) — index entry dropped, reporting for recompute",
                             j,
                             dest_block,
                         )
@@ -448,6 +465,8 @@ def _build_class():
                     layers = self._pending.pop((id(req), j), None)
                     if layers is None:
                         continue
+                    if req.skip_start <= j < req.skip_end:
+                        continue  # externally claimed — not ours to store
                     if self._index.get(bk) is not None:
                         continue  # compute-once: block already stored
                     buf = io.BytesIO()
@@ -467,6 +486,13 @@ def _build_class():
                         )
                     )
                     self.counters["kv_blocks_stored"] += 1
+                logger.warning(
+                    "κ-KV store pass: %d/%d full blocks now indexed for "
+                    "request of %d tokens",
+                    len(keys),
+                    n_full // bs,
+                    len(req.token_ids),
+                )
             self._pending.clear()
 
         def shutdown(self):
