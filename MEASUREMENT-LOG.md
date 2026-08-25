@@ -376,3 +376,42 @@ real questions are M2 (determinism, byte-level) and M5 (int8). Harness runs
 unchanged the moment disk clears.
 Trap M-T1: Windows Rust builds under low disk fail as LNK1140/LNK1318 PDB
 errors, not as a disk error — check free space first.
+
+## 2026-08-25 — M1/M2 measured (PROMPT-UORMATMUL): the oracle verdict
+
+Machine idle-ish, Qwen2.5-0.5B M0 shapes, uor-matmul @ fork-era code
+(slice API = packs BOTH operands per call), numpy/OpenBLAS multithreaded
+(the fair serving baseline — vLLM uses all cores).
+
+**M1 (f32 speed): RED, beyond even the pessimistic prior.**
+slice-API exact f32 runs at 0.009–0.019 GFLOP/s vs BLAS 39–434 —
+**3–4 orders of magnitude**. lm_head m=1: 30 s/call vs 7 ms. A full
+exact decode step ≈ 92 s/token via this API. The July table-path numbers
+(16–17 Gmac/s exact, pack-once) would bring an exact replay to ~30 ms/token
+— the oracle lane REQUIRES the table/pack-once path (fork PR #24), never
+the slice API. Trap M-T2: slice::gemm_float repacks per call; quoting it
+as serving cost is methodological error (July warning confirmed the hard way
+— first bench run burned 2.4 CPU-hours on packing).
+
+**M2 (determinism): GREEN — the demonstration pair, measured.**
+- BLAS side: one m=12 GEMM vs twelve m=1 GEMVs, same math →
+  **different bytes** (sha256 01871c3b… vs 83dbec9c…); m=6 halves ≡ m=12.
+  The m=1 kernel boundary is the fracture — numpy-level reproduction of
+  G0b's finding inside vLLM.
+- uor side: FNV digests **byte-identical across separate process runs**
+  (646af534…, 455e094c… reproduced); schedule-invariance additionally
+  asserted by the library's own CD conformance gates.
+**BLAS many-hashes; uor-matmul one-hash.** Exact bytes are also
+hardware-portable — a stronger property than GPU batch-invariant kernels
+(kernel-version-local) and the basis for UNIVERSAL κ-addresses of logits.
+
+**Design verdict (locked):** three tiers.
+1. f32-exact = the ORACLE: defines the canonical answer; used per-challenge
+   via the table path (~30 ms/token projected), never for serving.
+2. Freivalds (fork's challenge/verify.py, measured 5–14× cheaper, exact-
+   integer equality, ≤2⁻¹⁴⁰) = the everyday trust-free audit tier for
+   sealed linear algebra — new middle tier for the κ architecture.
+3. int8-exact = the only speed lane (July: 150–170 Gmac/s single-thread,
+   competitive with multithreaded f32 BLAS) → M5.
+Non-transfers, stated plainly: sub-cubic recursion (needs big square evens;
+decode is pancakes) and the error wall (k≤4864 is not the wall regime).
