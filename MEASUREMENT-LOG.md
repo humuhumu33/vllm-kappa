@@ -342,3 +342,37 @@ measurable overhead, real seals verify) · G2a PASS (192/192 at 48 tok) ·
 G2b PASS (poison harmless) · G2c: saturated-batch negative (all arms),
 decode-bound warm-start 4.4×/4.3× — GPU lane owns the publishable number ·
 G1b + Phase 3 (κ-KV load) + G2d: pending, need the load path and a GPU.
+
+## 2026-08-25 — M0 done, M1/M2 disk-blocked (PROMPT-UORMATMUL)
+
+**M0 shape census — Qwen2.5-0.5B-Instruct decode GEMMs** (h=896, inter=4864,
+14 heads/2 KV, head_dim 64, vocab 151936, 24 layers):
+
+| op | k | n | per token |
+|---|---|---|---|
+| q_proj / o_proj | 896 | 896 | ×24 |
+| k_proj / v_proj | 896 | 128 | ×24 |
+| gate_proj / up_proj | 896 | 4864 | ×24 |
+| down_proj | 4864 | 896 | ×24 |
+| lm_head | 896 | 151936 | ×1 |
+
+≈0.99 GFLOP/token at m=1. Bench shapes: m∈{1 decode, 16 batch}. The
+lm_head GEMM (896×151936) dominates single-token cost — the first op to
+route in M3, and the one where any GEMM-swap verdict is decided.
+
+**M1/M2 BLOCKED — disk, not design.** The uor-matmul bench harness is
+written (`crates/uor-matmul/examples/qwen_bench.rs`: real shapes, f32
+GFLOP/s medians + FNV digest for the determinism gate). Building it dies at
+`os error 112: not enough space` — C: at 0–0.6 GB free; a Rust release build
+of the workspace + dep tree needs several GB. The MSVC LNK1140/LNK1318 PDB
+errors were disk symptoms. Same hard blocker as S0/S5; the fix is the
+operator's elevated WSL-VHD compaction (144 GB vhdx, ~18 GB reclaimable) or
+model-store deletions. The running GUI+vLLM+shim stack is unharmed
+(engine/shim/daemon all 200).
+
+Prior ground truth stands until M1 refutes it: f32 uor-matmul ≈3.5× behind
+oneDNN (holo-vllm-uor-negative), so the M1 f32 curve is expected red and the
+real questions are M2 (determinism, byte-level) and M5 (int8). Harness runs
+unchanged the moment disk clears.
+Trap M-T1: Windows Rust builds under low disk fail as LNK1140/LNK1318 PDB
+errors, not as a disk error — check free space first.
